@@ -6,4 +6,4 @@ JS/TypeScript의 개발 경험과 npm 생태계를 유지하면서, 서버 공�
 
 | 폴더 | 실험 |
 | --- | --- |
-| [orm](orm/README.md) | SQLite ORM의 조회·객체 매핑을 범용 JS, 생성한 JS, C Node-API 애드온으로 비교 |
+| [orm](orm/README.md) | SQLite 조회·객체 매핑·복합 JOIN·트랜잭션·쓰기 락 경합을 JS와 C Node-API 애드온으로 비교 |

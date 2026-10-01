@@ -10,6 +10,7 @@
     "test": "node --test test/*.test.mjs",
     "check": "npm run build && npm test",
     "example": "node examples/users.mjs",
-    "bench": "node --expose-gc bench/run.mjs"
+    "bench": "node --expose-gc bench/run.mjs",
+    "bench:complex": "node --expose-gc bench/complex.mjs"
   }
 }

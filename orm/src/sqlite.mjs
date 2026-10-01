@@ -14,7 +14,7 @@ function quote(name) {
   return `"${name.replaceAll('"', '""')}"`;
 }
 
-function fromSqlite(field, value) {
+export function fromSqlite(field, value) {
   if (field.type === TYPE.boolean && value !== null) {
     if (value !== 0 && value !== 1) throw new Error(`Invalid SQLite boolean: ${field.name}`);
     return value === 1;
@@ -23,7 +23,7 @@ function fromSqlite(field, value) {
   return value;
 }
 
-function createMapper(fields) {
+export function createMapper(fields) {
   const properties = fields.map((field, index) =>
     `${JSON.stringify(field.name)}: read(fields[${index}], row[${JSON.stringify(field.name)}])`).join(',');
   return new Function('read', 'fields', `return row => ({ ${properties} });`)(fromSqlite, fields);
