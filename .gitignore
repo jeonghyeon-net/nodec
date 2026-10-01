@@ -1,0 +1,9 @@
+.DS_Store
+node_modules/
+orm/build/
+orm/results/local/
+*.cpuprofile
+*.core
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
