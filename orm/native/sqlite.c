@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 #include <node_api.h>
 #include <sqlite3.h>
 #include <stdbool.h>
@@ -8,6 +9,7 @@
 #include <ctype.h>
 #include <limits.h>
 #include <stdio.h>
+#include "commerce.h"
 
 typedef struct Select Select;
 typedef struct { sqlite3 *db; Select *queries; bool writable; } Database;
@@ -318,7 +320,7 @@ static bool column_value(napi_env env, Select *query, uint32_t index, napi_value
   return ok(env, napi_create_string_utf8(env, (const char *)text, (size_t)length, value));
 }
 
-static napi_value select_all(napi_env env, napi_callback_info info) {
+static napi_value select_all_impl(napi_env env, napi_callback_info info, bool profile) {
   napi_value args[1], result, keys[128];
   size_t argc = 1;
   Select *query;
@@ -327,12 +329,18 @@ static napi_value select_all(napi_env env, napi_callback_info info) {
   if (!unwrap(env, args[0], &select_tag, (void **)&query)) return NULL;
   if (!query->stmt || !query->owner->db) { error(env, "Database is closed"); return NULL; }
   if (query->is_run) { error(env, "Expected a select statement"); return NULL; }
+  double started = profile ? nodec_now_ms() : 0, step_ms = 0, materialize_ms = 0;
   CALL(napi_create_array(env, &result));
   for (uint32_t i = 0; i < query->count; i++)
     CALL(napi_create_string_utf8(env, query->columns[i].name, query->columns[i].length, &keys[i]));
   uint32_t row = 0;
   int status;
-  while ((status = sqlite3_step(query->stmt)) == SQLITE_ROW) {
+  for (;;) {
+    double t = profile ? nodec_now_ms() : 0;
+    status = sqlite3_step(query->stmt);
+    if (profile) step_ms += nodec_now_ms() - t;
+    if (status != SQLITE_ROW) break;
+    t = profile ? nodec_now_ms() : 0;
     napi_handle_scope scope;
     napi_value object, value;
     if (!ok(env, napi_open_handle_scope(env, &scope))) goto failure;
@@ -345,13 +353,70 @@ static napi_value select_all(napi_env env, napi_callback_info info) {
     bool saved = ok(env, napi_set_element(env, result, row++, object));
     bool closed = ok(env, napi_close_handle_scope(env, scope));
     if (!saved || !closed) goto failure;
+    if (profile) materialize_ms += nodec_now_ms() - t;
   }
   if (status != SQLITE_DONE) { database_error(env, query->owner->db); goto failure; }
   sqlite3_reset(query->stmt);
+  if (profile) {
+    double total_ms = nodec_now_ms() - started;
+    napi_value envelope, timing, value;
+    CALL(napi_create_object(env, &envelope));
+    CALL(napi_create_object(env, &timing));
+    CALL(napi_set_named_property(env, envelope, "rows", result));
+    CALL(napi_set_named_property(env, envelope, "timings", timing));
+    const char *names[] = { "sqliteStepMs", "flatDecodeAndMaterializeMs", "totalMs" };
+    double values[] = { step_ms, materialize_ms, total_ms };
+    for (int i = 0; i < 3; i++) {
+      CALL(napi_create_double(env, values[i], &value));
+      CALL(napi_set_named_property(env, timing, names[i], value));
+    }
+    return envelope;
+  }
   return result;
 failure:
   sqlite3_reset(query->stmt);
   return NULL;
+}
+
+static napi_value select_all(napi_env env, napi_callback_info info) { return select_all_impl(env, info, false); }
+static napi_value profile_all(napi_env env, napi_callback_info info) { return select_all_impl(env, info, true); }
+
+static napi_value commerce_all(napi_env env, napi_callback_info info) {
+  napi_value args[2]; size_t argc = 2;
+  Select *query; bool profile;
+  CALL(napi_get_cb_info(env, info, &argc, args, NULL, NULL));
+  if (argc != 2) { error(env, "commerce needs query and profiling flag"); return NULL; }
+  CALL(napi_get_value_bool(env, args[1], &profile));
+  if (!unwrap(env, args[0], &select_tag, (void **)&query)) return NULL;
+  if (!query->stmt || !query->owner->db) { error(env, "Database is closed"); return NULL; }
+  const char *names[] = { "customerId", "customerName", "orderId", "status", "itemId", "productId",
+    "productName", "quantity", "unitCents", "paymentId", "paidCents" };
+  if (query->is_run || query->count != 11) { error(env, "Expected commerce projection"); return NULL; }
+  for (uint32_t i = 0; i < 11; i++) {
+    int type = (i == 1 || i == 3 || i == 6) ? 4 : 1;
+    if (query->columns[i].length != strlen(names[i]) || memcmp(query->columns[i].name, names[i], strlen(names[i])) ||
+        query->columns[i].type != type || query->columns[i].nullable != (i >= 2) ||
+        strcmp(sqlite3_column_name(query->stmt, (int)i), names[i])) {
+      error(env, "Expected commerce projection names, types, order, and nullability"); return NULL;
+    }
+  }
+  return nodec_commerce_all(env, query->stmt, profile);
+}
+
+/* Diagnostic lower-work control: execute identical SQL but do not read/create field values. */
+static napi_value scan_rows(napi_env env, napi_callback_info info) {
+  napi_value args[1], result; size_t argc = 1; Select *query;
+  CALL(napi_get_cb_info(env, info, &argc, args, NULL, NULL));
+  if (argc != 1) { error(env, "scan needs a query"); return NULL; }
+  if (!unwrap(env, args[0], &select_tag, (void **)&query)) return NULL;
+  if (!query->stmt || !query->owner->db) { error(env, "Database is closed"); return NULL; }
+  if (query->is_run) { error(env, "Expected a select statement"); return NULL; }
+  double count = 0; int status;
+  while ((status = sqlite3_step(query->stmt)) == SQLITE_ROW) count++;
+  if (status != SQLITE_DONE) { database_error(env, query->owner->db); sqlite3_reset(query->stmt); return NULL; }
+  sqlite3_reset(query->stmt);
+  CALL(napi_create_double(env, count, &result));
+  return result;
 }
 
 napi_value initialize_sqlite(napi_env env, napi_value exports) {
@@ -363,6 +428,9 @@ napi_value initialize_sqlite(napi_env env, napi_value exports) {
     { "sqliteExec", NULL, exec_sql, NULL, NULL, NULL, napi_default, NULL },
     { "sqlitePrepareRun", NULL, prepare_run, NULL, NULL, NULL, napi_default, NULL },
     { "sqliteRun", NULL, run_statement, NULL, NULL, NULL, napi_default, NULL },
+    { "sqliteProfileAll", NULL, profile_all, NULL, NULL, NULL, napi_default, NULL },
+    { "sqliteCommerceAll", NULL, commerce_all, NULL, NULL, NULL, napi_default, NULL },
+    { "sqliteScan", NULL, scan_rows, NULL, NULL, NULL, napi_default, NULL },
   };
   CALL(napi_define_properties(env, exports, sizeof(properties) / sizeof(properties[0]), properties));
   napi_value version;

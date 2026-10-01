@@ -11,6 +11,7 @@
     "check": "npm run build && npm test",
     "example": "node examples/users.mjs",
     "bench": "node --expose-gc bench/run.mjs",
-    "bench:complex": "node --expose-gc bench/complex.mjs"
+    "bench:complex": "node --expose-gc bench/complex.mjs",
+    "bench:graph": "node --expose-gc bench/graph.mjs"
   }
 }

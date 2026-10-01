@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { types } from 'node:util';
+import { performance } from 'node:perf_hooks';
 import { createMapper, fromSqlite } from './sqlite.mjs';
 
 const native = createRequire(import.meta.url)('../build/mapper.node');
@@ -44,19 +45,39 @@ export function openSession(path, { engine = 'compiled', busyTimeoutMs = 1000 } 
       ? (model ? native.sqlitePrepare(connection, sql, values, model.fields) : native.sqlitePrepareRun(connection, sql, values))
       : connection.prepare(sql);
     const map = model && createMapper(model.fields);
+    const mapRows = rows => {
+      if (engine === 'driver') return rows;
+      if (engine === 'compiled') return rows.map(map);
+      return rows.map(row => {
+        const result = {};
+        for (const field of model.fields) result[field.name] = fromSqlite(field, row[field.name]);
+        return result;
+      });
+    };
     return Object.freeze({
       sql, parameters: values,
       ...(model ? { all() {
         ensureOpen();
         if (engine === 'native') return native.sqliteAll(statement);
-        const rows = statement.all(...values);
-        if (engine === 'driver') return rows;
-        if (engine === 'compiled') return rows.map(map);
-        return rows.map(row => {
-          const result = {};
-          for (const field of model.fields) result[field.name] = fromSqlite(field, row[field.name]);
-          return result;
-        });
+        return mapRows(statement.all(...values));
+      },
+      profile() {
+        ensureOpen();
+        if (engine === 'native') return native.sqliteProfileAll(statement);
+        const start = performance.now();
+        const raw = statement.all(...values), afterRead = performance.now();
+        const rows = mapRows(raw), end = performance.now();
+        return { rows, timings: { driverReadMs: afterRead - start, ormMapMs: end - afterRead, totalMs: end - start } };
+      },
+      commerce({ profile = false } = {}) {
+        ensureOpen();
+        if (engine !== 'native') throw new Error('commerce() requires the native engine and commerce projection');
+        return native.sqliteCommerceAll(statement, profile);
+      },
+      scan() {
+        ensureOpen();
+        if (engine !== 'native') throw new Error('scan() is a native diagnostic control');
+        return native.sqliteScan(statement);
       } } : { run() {
         ensureOpen();
         return engine === 'native' ? native.sqliteRun(statement) : Number(statement.run(...values).changes);

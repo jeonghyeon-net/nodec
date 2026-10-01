@@ -16,7 +16,7 @@ const args = [
   '-std=c11', '-O3', '-DNAPI_VERSION=8', '-Wall', '-Wextra', '-Werror',
   '-fPIC', '-shared', '-I', headers,
   ...(process.platform === 'darwin' ? ['-undefined', 'dynamic_lookup'] : []),
-  resolve(root, 'native/mapper.c'), resolve(root, 'native/sqlite.c'), '-lsqlite3',
+  resolve(root, 'native/mapper.c'), resolve(root, 'native/sqlite.c'), resolve(root, 'native/commerce.c'), '-lsqlite3',
   '-o', resolve(root, 'build/mapper.node'),
 ];
 const result = spawnSync(process.env.CC || 'cc', args, { stdio: 'inherit' });
